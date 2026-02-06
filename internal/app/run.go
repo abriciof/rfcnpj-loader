@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,6 +37,15 @@ type report struct {
 
 func Run(ctx context.Context, cfg config.Config) error {
 	start := time.Now()
+	slog.Info("pipeline started",
+		"start_month", cfg.StartMonth,
+		"force_month", cfg.ForceMonth,
+		"enable_download", cfg.EnableDownload,
+		"enable_extract", cfg.EnableExtract,
+		"create_indexes", cfg.CreateIndexes,
+		"output_path", cfg.OutputFilesPath,
+		"extracted_path", cfg.ExtractedFilesPath,
+	)
 
 	// ensure dirs
 	_ = os.MkdirAll(cfg.OutputFilesPath, 0o755)
@@ -47,6 +56,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	defer sqlDB.Close()
+	slog.Info("database connected", "host", cfg.DBHost, "port", cfg.DBPort, "db_name", cfg.DBName)
 
 	meta := state.NewMetaStore(sqlDB)
 	if err := meta.Ensure(ctx); err != nil {
@@ -68,7 +78,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	if items == nil {
 		// up-to-date
 		msg := fmt.Sprintf("✅ Já atualizado. Próximo mês (%s) ainda não disponível.", res.HumanPTBR())
-		log.Println(msg)
+		slog.Info("up-to-date", "month", res.String(), "message", msg)
 
 		if cfg.MailNotifyUpToDate && email.Enabled(email.SMTPConfig{Host: cfg.SMTPHost, Port: cfg.SMTPPort, User: cfg.SMTPUser, Pass: cfg.SMTPPass, To: cfg.MailTo}) {
 			_ = email.Send(email.SMTPConfig{Host: cfg.SMTPHost, Port: cfg.SMTPPort, User: cfg.SMTPUser, Pass: cfg.SMTPPass, To: cfg.MailTo},
@@ -78,6 +88,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		}
 		return nil
 	}
+	slog.Info("remote files listed", "month", res.String(), "count", len(items))
 
 	// Filter wanted zips based on enabled tables
 	want := downloader.Wanted{
@@ -94,12 +105,14 @@ func Run(ctx context.Context, cfg config.Config) error {
 	}
 	wantedItems := downloader.FilterWanted(items, want)
 	rep.Downloaded = len(wantedItems)
+	slog.Info("filtered wanted zip files", "count", len(wantedItems))
 
 	// Download (equivalente ao bloco comentado do Python, controlado por ENABLE_DOWNLOAD)
 	down := downloader.NewDAVDownloader(cfg.DavBaseDomain, cfg.OutputFilesPath, cfg.DownloadWorkers, cfg.EnableDownload)
 	if err := down.DownloadAll(ctx, wantedItems); err != nil {
 		return err
 	}
+	slog.Info("download stage finished", "planned_files", len(wantedItems), "enabled", cfg.EnableDownload)
 
 	// Extract (equivalente ao bloco comentado do Python, controlado por ENABLE_EXTRACT)
 	zipPaths := make([]string, 0, len(wantedItems))
@@ -112,24 +125,39 @@ func Run(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	rep.Extracted = len(zipPaths)
+	slog.Info("extract stage finished", "planned_files", len(zipPaths), "enabled", cfg.EnableExtract, "dest_dir", extractedMonthDir)
 
 	// Scan extracted directory for CSV/TXT files
 	filesByType, err := scan.ScanExtracted(extractedMonthDir)
 	if err != nil {
 		return err
 	}
+	slog.Info("scan stage finished",
+		"empresa_files", len(filesByType.Empresa),
+		"estabelecimento_files", len(filesByType.Estabelecimento),
+		"socios_files", len(filesByType.Socios),
+		"simples_files", len(filesByType.Simples),
+		"cnae_files", len(filesByType.Cnae),
+		"moti_files", len(filesByType.Moti),
+		"munic_files", len(filesByType.Munic),
+		"natju_files", len(filesByType.Natju),
+		"pais_files", len(filesByType.Pais),
+		"quals_files", len(filesByType.Quals),
+	)
 
 	// Load enabled tables in parallel (TABLE_WORKERS)
 	tasks := buildLoadTasks(cfg, filesByType)
 	if err := runLoadTasks(ctx, sqlDB, cfg, tasks, &rep); err != nil {
 		return err
 	}
+	slog.Info("load stage finished", "tables", len(tasks))
 
 	// Optional indexes (equivalente ao bloco comentado do Python)
 	if cfg.CreateIndexes {
 		if err := createIndexes(ctx, sqlDB, cfg); err != nil {
 			return err
 		}
+		slog.Info("index stage finished")
 	}
 
 	// Save meta month + url
@@ -145,7 +173,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		_ = email.Send(email.SMTPConfig{Host: cfg.SMTPHost, Port: cfg.SMTPPort, User: cfg.SMTPUser, Pass: cfg.SMTPPass, To: cfg.MailTo}, subject, body)
 	}
 
-	log.Println("✅ Processo finalizado. Mês:", res.HumanPTBR())
+	slog.Info("pipeline finished", "month", res.String(), "duration", time.Since(start).String())
 	return nil
 }
 
@@ -256,7 +284,7 @@ func runLoadTasks(ctx context.Context, sqlDB *sql.DB, cfg config.Config, tasks [
 			defer func() { <-sem }()
 
 			if len(t.files) == 0 {
-				log.Printf("⚠️  Sem arquivos para tabela %s (provável nome diferente no zip).", t.spec.Name)
+				slog.Warn("no files found for table", "table", t.spec.Name)
 				return
 			}
 

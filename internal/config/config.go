@@ -52,6 +52,8 @@ type Config struct {
 	SMTPPass          string
 	MailTo            string
 	MailNotifyUpToDate bool
+
+	LogLevel string
 }
 
 func Load() (Config, error) {
@@ -96,6 +98,7 @@ func Load() (Config, error) {
 		SMTPPass: getenv("SMTP_PASS", ""),
 		MailTo:   getenv("MAIL_TO", ""),
 		MailNotifyUpToDate: getenvBool("MAIL_NOTIFY_UPTODATE", false),
+		LogLevel:           getenv("LOG_LEVEL", "info"),
 	}
 
 	if strings.TrimSpace(cfg.DavListURLTemplate) == "" {

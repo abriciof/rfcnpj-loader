@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path"
@@ -92,8 +93,10 @@ func NewDAVDownloader(baseDomain, outputDir string, workers int, enable bool) *D
 func (d *DAVDownloader) DownloadAll(ctx context.Context, items []dav.Item) error {
 	if !d.EnableDownload {
 		// equivalente ao seu bloco comentado: não baixar caso dê erro / reprocessamento
+		slog.Info("download disabled by config")
 		return nil
 	}
+	slog.Info("download stage started", "files", len(items), "workers", d.Workers)
 	if err := os.MkdirAll(d.OutputDir, 0o755); err != nil {
 		return err
 	}
@@ -130,6 +133,7 @@ func (d *DAVDownloader) DownloadAll(ctx context.Context, items []dav.Item) error
 			return err
 		}
 	}
+	slog.Info("download stage completed", "files", len(items))
 	return nil
 }
 
@@ -141,10 +145,12 @@ func (d *DAVDownloader) downloadOne(ctx context.Context, it dav.Item) error {
 	// check_diff por tamanho (equivalente ao Python)
 	if st, err := os.Stat(dst); err == nil {
 		if it.ContentLength > 0 && st.Size() == it.ContentLength {
+			slog.Info("download skipped (same size)", "file", fileName, "size", st.Size())
 			return nil // já baixado e igual
 		}
 		_ = os.Remove(dst)
 	}
+	slog.Info("downloading file", "file", fileName, "url", url)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -178,6 +184,7 @@ func (d *DAVDownloader) downloadOne(ctx context.Context, it dav.Item) error {
 	if err := os.Rename(tmp, dst); err != nil {
 		return err
 	}
+	slog.Info("downloaded file", "file", fileName, "dest", dst)
 
 	_ = start // se quiser logar tempo por arquivo
 	return nil

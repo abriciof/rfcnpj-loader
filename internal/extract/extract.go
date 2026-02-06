@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -25,8 +26,10 @@ func NewExtractor(workers int, enable bool) *Extractor {
 func (e *Extractor) ExtractAll(ctx context.Context, zipFiles []string, destDir string) error {
 	if !e.EnableExtract {
 		// equivalente ao bloco comentado: não extrair/reprocessar
+		slog.Info("extract disabled by config")
 		return nil
 	}
+	slog.Info("extract stage started", "files", len(zipFiles), "workers", e.Workers, "dest_dir", destDir)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return err
 	}
@@ -52,7 +55,8 @@ func (e *Extractor) ExtractAll(ctx context.Context, zipFiles []string, destDir s
 		for _, zf := range zipFiles {
 			select {
 			case <-ctx.Done():
-				break
+				close(jobs)
+				return
 			case jobs <- zf:
 			}
 		}
@@ -66,6 +70,7 @@ func (e *Extractor) ExtractAll(ctx context.Context, zipFiles []string, destDir s
 			return err
 		}
 	}
+	slog.Info("extract stage completed", "files", len(zipFiles))
 	return nil
 }
 

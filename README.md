@@ -16,6 +16,35 @@ Carregador dos Dados Abertos do CNPJ (Receita Federal) para Postgres, com:
 docker compose up --build
 ```
 
+## Logs no Docker
+
+Os logs agora saem em JSON estruturado (com `level`, `msg`, timestamps e campos como `month`, `count`, `duration`).
+
+Para acompanhar em tempo real:
+
+```bash
+docker compose logs -f loader
+```
+
+Opcional: controlar verbosidade no `.env`:
+
+```env
+LOG_LEVEL=info
+```
+
+Valores aceitos: `debug`, `info`, `warn`, `error`.
+
+## Depois de subir o container
+
+1. Verifique se o serviço iniciou sem erro de config:
+   `docker compose logs -f loader`
+2. Confirme conexão com banco (log `database connected`).
+3. Confirme listagem DAV (log `remote files listed`).
+4. Acompanhe estágios:
+   `download stage ...`, `extract stage ...`, `scan stage ...`, `load stage ...`
+5. Final esperado:
+   log `pipeline finished`.
+
 ## Como funciona a automação mensal
 
 O loader salva no Postgres (tabela `rfcnpj_meta`) duas chaves:

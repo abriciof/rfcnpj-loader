@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/abriciof/rfcnpj-loader/internal/app"
@@ -14,8 +15,13 @@ import (
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		slog.Error("failed to load config", "error", err)
+		os.Exit(1)
 	}
+
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: parseLogLevel(cfg.LogLevel),
+	})))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -25,10 +31,25 @@ func main() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sig
+		slog.Info("shutdown signal received")
 		cancel()
 	}()
 
 	if err := app.Run(ctx, cfg); err != nil {
-		log.Fatalf("run: %v", err)
+		slog.Error("application run failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+func parseLogLevel(v string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
 	}
 }

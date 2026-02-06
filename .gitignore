@@ -20,6 +20,8 @@ dist/
 *.test
 *.out
 coverage.out
+cov*
+*cov
 
 # Editor/OS
 .vscode/
