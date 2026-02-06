@@ -54,6 +54,7 @@ type Config struct {
 	MailNotifyUpToDate bool
 
 	LogLevel string
+	ReportUTCOffset string
 }
 
 func Load() (Config, error) {
@@ -99,6 +100,7 @@ func Load() (Config, error) {
 		MailTo:   getenv("MAIL_TO", ""),
 		MailNotifyUpToDate: getenvBool("MAIL_NOTIFY_UPTODATE", false),
 		LogLevel:           getenv("LOG_LEVEL", "info"),
+		ReportUTCOffset:    getenv("REPORT_UTC_OFFSET", "-04:00"),
 	}
 
 	if strings.TrimSpace(cfg.DavListURLTemplate) == "" {

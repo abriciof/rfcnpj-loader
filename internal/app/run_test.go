@@ -48,6 +48,7 @@ func TestFormatReport(t *testing.T) {
 		MonthURL:   "https://example.test/2026-01/",
 		StartedAt:  start,
 		FinishedAt: finish,
+		UTCOffset:  "-04:00",
 		Downloaded: 3,
 		Extracted:  2,
 		LoadedRows: map[string]int64{
@@ -61,6 +62,8 @@ func TestFormatReport(t *testing.T) {
 		"RFCNPJ Loader - Finalizado",
 		"Mês: Janeiro de 2026 (2026-01)",
 		"URL: https://example.test/2026-01/",
+		"Início: 2026-01-01T06:00:00-04:00",
+		"Fim: 2026-01-01T06:02:00-04:00",
 		"Downloads planejados: 3",
 		"Arquivos extraídos: 2",
 		"- empresa: 10",
@@ -72,4 +75,3 @@ func TestFormatReport(t *testing.T) {
 		}
 	}
 }
-

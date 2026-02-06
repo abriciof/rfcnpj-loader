@@ -29,6 +29,7 @@ type report struct {
 	MonthURL   string
 	StartedAt  time.Time
 	FinishedAt time.Time
+	UTCOffset  string
 	Downloaded int
 	Extracted  int
 	LoadedRows map[string]int64
@@ -78,6 +79,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		Month:      res,
 		MonthURL:   fmt.Sprintf(cfg.DavListURLTemplate, res.String()),
 		StartedAt:  start,
+		UTCOffset:  cfg.ReportUTCOffset,
 		LoadedRows: map[string]int64{},
 	}
 
@@ -421,9 +423,9 @@ func formatReport(rep report) string {
 	sb := strings.Builder{}
 	sb.WriteString("RFCNPJ Loader - Finalizado\n")
 	sb.WriteString("Mês: " + rep.Month.HumanPTBR() + " (" + rep.Month.String() + ")\n")
-	sb.WriteString("URL: " + rep.MonthURL + "\n")
-	sb.WriteString("Início: " + rep.StartedAt.Format(time.RFC3339) + "\n")
-	sb.WriteString("Fim: " + rep.FinishedAt.Format(time.RFC3339) + "\n")
+	sb.WriteString("URL: " + formatMonthURLForEmail(rep.MonthURL) + "\n")
+	sb.WriteString("Início: " + formatTimeInOffset(rep.StartedAt, rep.UTCOffset).Format(time.RFC3339) + "\n")
+	sb.WriteString("Fim: " + formatTimeInOffset(rep.FinishedAt, rep.UTCOffset).Format(time.RFC3339) + "\n")
 	sb.WriteString(fmt.Sprintf("Duração: %s\n", dur))
 	sb.WriteString(fmt.Sprintf("Downloads planejados: %d\n", rep.Downloaded))
 	sb.WriteString(fmt.Sprintf("Arquivos extraídos: %d\n", rep.Extracted))
@@ -482,4 +484,30 @@ func yearMonthLess(a, b timeutil.YearMonth) bool {
 		return a.Year < b.Year
 	}
 	return a.Month < b.Month
+}
+
+func formatMonthURLForEmail(raw string) string {
+	const davPrefix = "https://arquivos.receitafederal.gov.br/public.php/dav/files/gn672Ad4CF8N6TK"
+	const webPrefix = "https://arquivos.receitafederal.gov.br/index.php/s/gn672Ad4CF8N6TK?dir="
+
+	if strings.HasPrefix(raw, davPrefix) {
+		path := strings.TrimPrefix(raw, davPrefix)
+		path = strings.TrimSuffix(path, "/")
+		return webPrefix + path
+	}
+	return raw
+}
+
+func formatTimeInOffset(t time.Time, offset string) time.Time {
+	offset = strings.TrimSpace(offset)
+	if offset == "" {
+		return t
+	}
+	parsed, err := time.Parse("-07:00", offset)
+	if err != nil {
+		return t
+	}
+	_, secs := parsed.Zone()
+	loc := time.FixedZone("UTC"+offset, secs)
+	return t.In(loc)
 }
