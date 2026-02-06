@@ -98,19 +98,21 @@ func Run(ctx context.Context, cfg config.Config) error {
 	}
 	slog.Info("remote files listed", "month", res.String(), "count", len(items))
 
-	// Filter wanted zips based on enabled tables
-	want := downloader.Wanted{
-		Empresas:         cfg.LoadEmpresa,
-		Estabelecimentos: cfg.LoadEstabelecimento,
-		Socios:           cfg.LoadSocios,
-		Simples:          cfg.LoadSimples,
-		Motivos:          cfg.LoadMoti,
-		Qualificacoes:    cfg.LoadQuals,
-		Cnaes:            cfg.LoadCnae,
-		Municipios:       cfg.LoadMunic,
-		Naturezas:        cfg.LoadNatju,
-		Paises:           cfg.LoadPais,
+	if !hasAnyTableToLoad(tableShouldLoad) {
+		msg := fmt.Sprintf("✅ Já atualizado para o mês %s em todas as tabelas habilitadas.", res.HumanPTBR())
+		slog.Info("up-to-date-by-table", "month", res.String(), "message", msg)
+
+		if cfg.MailNotifyUpToDate && email.Enabled(email.SMTPConfig{Host: cfg.SMTPHost, Port: cfg.SMTPPort, User: cfg.SMTPUser, Pass: cfg.SMTPPass, To: cfg.MailTo}) {
+			_ = email.Send(email.SMTPConfig{Host: cfg.SMTPHost, Port: cfg.SMTPPort, User: cfg.SMTPUser, Pass: cfg.SMTPPass, To: cfg.MailTo},
+				"RFCNPJ Loader - Atualizado ("+res.String()+")",
+				msg,
+			)
+		}
+		return nil
 	}
+
+	// Filter wanted zips based on enabled tables
+	want := wantedFromTableMap(tableShouldLoad)
 	wantedItems := downloader.FilterWanted(items, want)
 	rep.Downloaded = len(wantedItems)
 	slog.Info("filtered wanted zip files", "count", len(wantedItems))
@@ -478,6 +480,30 @@ func enabledTableNames(cfg config.Config) []string {
 
 func tableMonthMetaKey(table string) string { return "loaded_month_" + strings.ToLower(table) }
 func tableURLMetaKey(table string) string   { return "loaded_url_" + strings.ToLower(table) }
+
+func hasAnyTableToLoad(shouldLoad map[string]bool) bool {
+	for _, load := range shouldLoad {
+		if load {
+			return true
+		}
+	}
+	return false
+}
+
+func wantedFromTableMap(m map[string]bool) downloader.Wanted {
+	return downloader.Wanted{
+		Empresas:         m["empresa"],
+		Estabelecimentos: m["estabelecimento"],
+		Socios:           m["socios"],
+		Simples:          m["simples"],
+		Motivos:          m["moti"],
+		Qualificacoes:    m["quals"],
+		Cnaes:            m["cnae"],
+		Municipios:       m["munic"],
+		Naturezas:        m["natju"],
+		Paises:           m["pais"],
+	}
+}
 
 func yearMonthLess(a, b timeutil.YearMonth) bool {
 	if a.Year != b.Year {
