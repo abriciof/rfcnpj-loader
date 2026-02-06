@@ -63,7 +63,13 @@ func Run(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 
-	res, items, err := resolveTargetMonth(ctx, cfg, meta)
+	enabledTables := enabledTableNames(cfg)
+	if len(enabledTables) == 0 {
+		slog.Warn("no tables enabled; nothing to do")
+		return nil
+	}
+
+	res, items, tableShouldLoad, err := resolveTargetMonth(ctx, cfg, meta, enabledTables)
 	if err != nil {
 		return err
 	}
@@ -147,7 +153,10 @@ func Run(ctx context.Context, cfg config.Config) error {
 
 	// Load enabled tables in parallel (TABLE_WORKERS)
 	tasks := buildLoadTasks(cfg, filesByType)
-	if err := runLoadTasks(ctx, sqlDB, cfg, tasks, &rep); err != nil {
+	tasks = filterLoadTasks(tasks, tableShouldLoad)
+	if len(tasks) == 0 {
+		slog.Info("all enabled tables already loaded for target month", "month", res.String())
+	} else if err := runLoadTasks(ctx, sqlDB, cfg, tasks, &rep); err != nil {
 		return err
 	}
 	slog.Info("load stage finished", "tables", len(tasks))
@@ -163,6 +172,10 @@ func Run(ctx context.Context, cfg config.Config) error {
 	// Save meta month + url
 	_ = meta.Set(ctx, "loaded_month", res.String())
 	_ = meta.Set(ctx, "loaded_url", rep.MonthURL)
+	for _, task := range tasks {
+		_ = meta.Set(ctx, tableMonthMetaKey(task.spec.Name), res.String())
+		_ = meta.Set(ctx, tableURLMetaKey(task.spec.Name), rep.MonthURL)
+	}
 
 	rep.FinishedAt = time.Now()
 
@@ -177,53 +190,82 @@ func Run(ctx context.Context, cfg config.Config) error {
 	return nil
 }
 
-func resolveTargetMonth(ctx context.Context, cfg config.Config, meta *state.MetaStore) (timeutil.YearMonth, []dav.Item, error) {
+func resolveTargetMonth(ctx context.Context, cfg config.Config, meta *state.MetaStore, enabledTables []string) (timeutil.YearMonth, []dav.Item, map[string]bool, error) {
 	client := dav.NewClient()
 
 	// FORCE_MONTH
 	if strings.TrimSpace(cfg.ForceMonth) != "" {
 		ym, err := timeutil.ParseYearMonth(cfg.ForceMonth)
 		if err != nil {
-			return timeutil.YearMonth{}, nil, fmt.Errorf("FORCE_MONTH inválido: %w", err)
+			return timeutil.YearMonth{}, nil, nil, fmt.Errorf("FORCE_MONTH inválido: %w", err)
 		}
 		url := fmt.Sprintf(cfg.DavListURLTemplate, ym.String())
 		items, err := client.ListZips(ctx, url)
 		if err != nil {
-			return ym, nil, fmt.Errorf("FORCE_MONTH não disponível: %w", err)
+			return ym, nil, nil, fmt.Errorf("FORCE_MONTH não disponível: %w", err)
 		}
-		return ym, items, nil
+		shouldLoad := make(map[string]bool, len(enabledTables))
+		for _, tbl := range enabledTables {
+			shouldLoad[tbl] = true
+		}
+		return ym, items, shouldLoad, nil
 	}
 
-	lastStr, ok, err := meta.Get(ctx, "loaded_month")
-	if err != nil {
-		return timeutil.YearMonth{}, nil, err
-	}
+	var (
+		target      timeutil.YearMonth
+		targetSet   bool
+		lastByTable = make(map[string]timeutil.YearMonth, len(enabledTables))
+		hasByTable  = make(map[string]bool, len(enabledTables))
+	)
 
-	var target timeutil.YearMonth
-	if ok {
-		last, err := timeutil.ParseYearMonth(lastStr)
+	for _, table := range enabledTables {
+		lastStr, ok, err := meta.Get(ctx, tableMonthMetaKey(table))
 		if err != nil {
-			return timeutil.YearMonth{}, nil, fmt.Errorf("loaded_month inválido no BD: %w", err)
+			return timeutil.YearMonth{}, nil, nil, err
 		}
-		target = last.Next()
-	} else {
-		if strings.TrimSpace(cfg.StartMonth) == "" {
-			return timeutil.YearMonth{}, nil, fmt.Errorf("primeira execução: START_MONTH é obrigatório (não existe loaded_month no BD)")
+
+		var candidate timeutil.YearMonth
+		if ok {
+			last, err := timeutil.ParseYearMonth(lastStr)
+			if err != nil {
+				return timeutil.YearMonth{}, nil, nil, fmt.Errorf("meta inválida para %s: %w", table, err)
+			}
+			lastByTable[table] = last
+			hasByTable[table] = true
+			candidate = last.Next()
+		} else {
+			if strings.TrimSpace(cfg.StartMonth) == "" {
+				return timeutil.YearMonth{}, nil, nil, fmt.Errorf("primeira execução da tabela %s: START_MONTH é obrigatório", table)
+			}
+			first, err := timeutil.ParseYearMonth(cfg.StartMonth)
+			if err != nil {
+				return timeutil.YearMonth{}, nil, nil, fmt.Errorf("START_MONTH inválido: %w", err)
+			}
+			candidate = first
 		}
-		first, err := timeutil.ParseYearMonth(cfg.StartMonth)
-		if err != nil {
-			return timeutil.YearMonth{}, nil, fmt.Errorf("START_MONTH inválido: %w", err)
+
+		if !targetSet || yearMonthLess(candidate, target) {
+			target = candidate
+			targetSet = true
 		}
-		target = first
 	}
 
 	url := fmt.Sprintf(cfg.DavListURLTemplate, target.String())
 	items, err := client.ListZips(ctx, url)
 	if err != nil {
 		// mês ainda não publicado -> up-to-date
-		return target, nil, nil
+		return target, nil, nil, nil
 	}
-	return target, items, nil
+
+	shouldLoad := make(map[string]bool, len(enabledTables))
+	for _, table := range enabledTables {
+		if !hasByTable[table] {
+			shouldLoad[table] = true
+			continue
+		}
+		shouldLoad[table] = lastByTable[table].String() != target.String()
+	}
+	return target, items, shouldLoad, nil
 }
 
 type loadTask struct {
@@ -267,6 +309,18 @@ func buildLoadTasks(cfg config.Config, fb scan.FilesByType) []loadTask {
 	// keep stable order
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].spec.Name < tasks[j].spec.Name })
 	return tasks
+}
+
+func filterLoadTasks(tasks []loadTask, shouldLoad map[string]bool) []loadTask {
+	filtered := make([]loadTask, 0, len(tasks))
+	for _, task := range tasks {
+		if shouldLoad[task.spec.Name] {
+			filtered = append(filtered, task)
+			continue
+		}
+		slog.Info("skipping table already loaded for target month", "table", task.spec.Name)
+	}
+	return filtered
 }
 
 func runLoadTasks(ctx context.Context, sqlDB *sql.DB, cfg config.Config, tasks []loadTask, rep *report) error {
@@ -383,4 +437,49 @@ func formatReport(rep report) string {
 		sb.WriteString(fmt.Sprintf("- %s: %d\n", k, rep.LoadedRows[k]))
 	}
 	return sb.String()
+}
+
+func enabledTableNames(cfg config.Config) []string {
+	var out []string
+	if cfg.LoadEmpresa {
+		out = append(out, "empresa")
+	}
+	if cfg.LoadEstabelecimento {
+		out = append(out, "estabelecimento")
+	}
+	if cfg.LoadSocios {
+		out = append(out, "socios")
+	}
+	if cfg.LoadSimples {
+		out = append(out, "simples")
+	}
+	if cfg.LoadCnae {
+		out = append(out, "cnae")
+	}
+	if cfg.LoadMoti {
+		out = append(out, "moti")
+	}
+	if cfg.LoadMunic {
+		out = append(out, "munic")
+	}
+	if cfg.LoadNatju {
+		out = append(out, "natju")
+	}
+	if cfg.LoadPais {
+		out = append(out, "pais")
+	}
+	if cfg.LoadQuals {
+		out = append(out, "quals")
+	}
+	return out
+}
+
+func tableMonthMetaKey(table string) string { return "loaded_month_" + strings.ToLower(table) }
+func tableURLMetaKey(table string) string   { return "loaded_url_" + strings.ToLower(table) }
+
+func yearMonthLess(a, b timeutil.YearMonth) bool {
+	if a.Year != b.Year {
+		return a.Year < b.Year
+	}
+	return a.Month < b.Month
 }
